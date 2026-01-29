@@ -1,7 +1,8 @@
-.PHONY: all build test clean install fmt lint
+.PHONY: all build test clean install install-coordinator install-agent install-client fmt lint
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS := -ldflags "-X main.Version=$(VERSION)"
+PREFIX ?= $(HOME)/.local
 
 all: build
 
@@ -24,6 +25,30 @@ install:
 	go install $(LDFLAGS) ./cmd/clusterd
 	go install $(LDFLAGS) ./cmd/clusteragent
 	go install $(LDFLAGS) ./cmd/clustersh
+
+install-coordinator: bin/clusterd
+	@mkdir -p $(PREFIX)/bin
+	cp bin/clusterd $(PREFIX)/bin/clusterd
+	@echo "Installed clusterd to $(PREFIX)/bin/clusterd"
+
+install-agent: bin/clusteragent
+	@mkdir -p $(PREFIX)/bin
+	cp bin/clusteragent $(PREFIX)/bin/clusteragent
+	@echo "Installed clusteragent to $(PREFIX)/bin/clusteragent"
+
+install-client: bin/clustersh
+	@mkdir -p $(PREFIX)/bin
+	cp bin/clustersh $(PREFIX)/bin/clustersh
+	@echo "Installed clustersh to $(PREFIX)/bin/clustersh"
+
+bin/clusterd: $(shell find . -name '*.go' -type f)
+	go build $(LDFLAGS) -o bin/clusterd ./cmd/clusterd
+
+bin/clusteragent: $(shell find . -name '*.go' -type f)
+	go build $(LDFLAGS) -o bin/clusteragent ./cmd/clusteragent
+
+bin/clustersh: $(shell find . -name '*.go' -type f)
+	go build $(LDFLAGS) -o bin/clustersh ./cmd/clustersh
 
 fmt:
 	go fmt ./...

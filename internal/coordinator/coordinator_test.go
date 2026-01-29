@@ -5,8 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
-
 	"j5.nz/clustersh/internal/protocol"
 	"j5.nz/clustersh/internal/storage"
 )
@@ -79,7 +77,10 @@ func TestCoordinator_UnregisterAgent(t *testing.T) {
 		Arch:        "amd64",
 	}
 
-	coord.RegisterAgent(nil, reg)
+	_, err = coord.RegisterAgent(nil, reg)
+	if err != nil {
+		t.Fatalf("RegisterAgent() error = %v", err)
+	}
 	coord.UnregisterAgent("test-machine")
 
 	machines := coord.ListMachines()
@@ -114,7 +115,9 @@ func TestCoordinator_GetOutput(t *testing.T) {
 		CreatedAt:  time.Now(),
 		FinishedAt: time.Now(),
 	}
-	jobStore.Save(job)
+	if err := jobStore.Save(job); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
 
 	output, err := coord.GetOutput("test-job")
 	if err != nil {
@@ -149,7 +152,9 @@ func TestCoordinator_GetHistory(t *testing.T) {
 		{JobID: "job-3", Machine: "machine-b", Command: "cmd3", Status: "completed", CreatedAt: time.Now()},
 	}
 	for _, job := range jobs {
-		jobStore.Save(job)
+		if err := jobStore.Save(job); err != nil {
+			t.Fatalf("Save() error = %v", err)
+		}
 	}
 
 	history, err := coord.GetHistory("machine-a")
@@ -181,7 +186,9 @@ func TestCoordinator_HandleResult(t *testing.T) {
 		CreatedAt: time.Now(),
 		StartedAt: time.Now(),
 	}
-	jobStore.Save(job)
+	if err := jobStore.Save(job); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
 
 	// Handle result
 	result := &protocol.ResultPayload{
@@ -209,10 +216,4 @@ func TestCoordinator_HandleResult(t *testing.T) {
 	if output.Output != "test\n" {
 		t.Errorf("Output = %s, want test\\n", output.Output)
 	}
-}
-
-// MockWebSocketConn is a mock for websocket.Conn for testing
-type MockWebSocketConn struct {
-	*websocket.Conn
-	writtenMessages []interface{}
 }

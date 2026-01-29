@@ -236,7 +236,9 @@ func (c *Client) Login(coordinatorURL string) (string, error) {
 		if err := os.WriteFile(certPath, []byte(loginResp.Certificate), 0644); err != nil {
 			return "", fmt.Errorf("save certificate: %w", err)
 		}
-		c.keyPair.SetCertificate([]byte(loginResp.Certificate))
+		if err := c.keyPair.SetCertificate([]byte(loginResp.Certificate)); err != nil {
+			return "", fmt.Errorf("set certificate: %w", err)
+		}
 
 		// Update HTTP client with TLS
 		tlsConfig, err := security.NewClientTLSConfig(c.caCert, c.keyPair)
@@ -247,7 +249,9 @@ func (c *Client) Login(coordinatorURL string) (string, error) {
 
 		// Save config
 		configPath := filepath.Join(c.configDir, "config.json")
-		storage.SaveJSON(configPath, c.config)
+		if err := storage.SaveJSON(configPath, c.config); err != nil {
+			return "", fmt.Errorf("save config: %w", err)
+		}
 
 		return "", nil
 	}
@@ -271,7 +275,9 @@ func (c *Client) WaitForApproval(fingerprint string, timeout time.Duration) erro
 			if err := os.WriteFile(certPath, []byte(cert), 0644); err != nil {
 				return fmt.Errorf("save certificate: %w", err)
 			}
-			c.keyPair.SetCertificate([]byte(cert))
+			if err := c.keyPair.SetCertificate([]byte(cert)); err != nil {
+				return fmt.Errorf("set certificate: %w", err)
+			}
 
 			tlsConfig, err := security.NewClientTLSConfig(c.caCert, c.keyPair)
 			if err != nil {
@@ -280,7 +286,9 @@ func (c *Client) WaitForApproval(fingerprint string, timeout time.Duration) erro
 			c.http.Transport = &http.Transport{TLSClientConfig: tlsConfig}
 
 			configPath := filepath.Join(c.configDir, "config.json")
-			storage.SaveJSON(configPath, c.config)
+			if err := storage.SaveJSON(configPath, c.config); err != nil {
+				return fmt.Errorf("save config: %w", err)
+			}
 
 			return nil
 		}
@@ -333,6 +341,9 @@ func (c *Client) checkApproval() (string, error) {
 }
 
 func (c *Client) get(path string) (*http.Response, error) {
+	if c.config.CoordinatorURL == "" {
+		return nil, fmt.Errorf("coordinator URL not configured. Run 'clustersh login <url>' first")
+	}
 	url := c.config.CoordinatorURL + path
 	resp, err := c.http.Get(url)
 	if err != nil {
@@ -353,6 +364,9 @@ func (c *Client) get(path string) (*http.Response, error) {
 }
 
 func (c *Client) post(path string, body interface{}) (*http.Response, error) {
+	if c.config.CoordinatorURL == "" {
+		return nil, fmt.Errorf("coordinator URL not configured. Run 'clustersh login <url>' first")
+	}
 	url := c.config.CoordinatorURL + path
 
 	var bodyReader io.Reader

@@ -124,7 +124,9 @@ func TestJobStore_Delete(t *testing.T) {
 		CreatedAt: time.Now(),
 	}
 
-	store.Save(job)
+	if err := store.Save(job); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
 
 	if err := store.Delete("delete-me"); err != nil {
 		t.Fatalf("Delete() error = %v", err)
@@ -156,7 +158,9 @@ func TestJobStore_History(t *testing.T) {
 		ExitCode:  0,
 		CreatedAt: time.Now(),
 	}
-	store.Save(job)
+	if err := store.Save(job); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
 
 	history, err := store.History("test-machine")
 	if err != nil {

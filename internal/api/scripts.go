@@ -155,7 +155,7 @@ echo "Machine name: $MACHINE_NAME"
 `, coordinatorURL)
 
 	w.Header().Set("Content-Type", "text/plain")
-	w.Write([]byte(script))
+	_, _ = w.Write([]byte(script))
 }
 
 func (s *Server) handleInstallPs1(w http.ResponseWriter, r *http.Request) {
@@ -242,7 +242,7 @@ Write-Host "Machine name: $MachineName"
 `, coordinatorURL)
 
 	w.Header().Set("Content-Type", "text/plain")
-	w.Write([]byte(script))
+	_, _ = w.Write([]byte(script))
 }
 
 func (s *Server) handleInstallClientSh(w http.ResponseWriter, r *http.Request) {
@@ -368,5 +368,5 @@ fi
 `, coordinatorURL)
 
 	w.Header().Set("Content-Type", "text/plain")
-	w.Write([]byte(script))
+	_, _ = w.Write([]byte(script))
 }

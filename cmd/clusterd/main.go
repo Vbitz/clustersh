@@ -78,7 +78,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	configPath := filepath.Join(dir, "config.json")
 	config := storage.DefaultCoordinatorConfig()
 	if err := storage.LoadJSON(configPath, config); err != nil {
-		storage.SaveJSON(configPath, config)
+		_ = storage.SaveJSON(configPath, config) // Best effort save default config
 	}
 
 	// Override with flags
@@ -133,7 +133,9 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("sign certificate: %w", err)
 		}
 
-		serverKeyPair.SetCertificate(certPEM)
+		if err := serverKeyPair.SetCertificate(certPEM); err != nil {
+			return fmt.Errorf("set server certificate: %w", err)
+		}
 		if err := serverKeyPair.SaveToFiles(serverKeyPath, serverCertPath); err != nil {
 			return fmt.Errorf("save server certificate: %w", err)
 		}
@@ -198,7 +200,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		<-sigCh
 		log.Println("Shutting down...")
 		cancel()
-		server.Shutdown(context.Background())
+		_ = server.Shutdown(context.Background())
 	}()
 
 	log.Printf("Starting coordinator on %s", addr)

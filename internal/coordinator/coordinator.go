@@ -72,7 +72,7 @@ func (c *Coordinator) RegisterAgent(conn *websocket.Conn, reg *protocol.Register
 	c.agents[reg.MachineName] = agent
 
 	if c.audit != nil {
-		c.audit.LogAgentConnect(reg.MachineName)
+		_ = c.audit.LogAgentConnect(reg.MachineName)
 	}
 
 	log.Printf("Agent registered: %s (%s/%s)", reg.MachineName, reg.OS, reg.Arch)
@@ -90,7 +90,7 @@ func (c *Coordinator) UnregisterAgent(name string) {
 		agent.mu.Unlock()
 
 		if c.audit != nil {
-			c.audit.LogAgentDisconnect(name)
+			_ = c.audit.LogAgentDisconnect(name)
 		}
 
 		log.Printf("Agent disconnected: %s", name)
@@ -178,10 +178,10 @@ func (c *Coordinator) ExecuteCommand(ctx context.Context, client string, req *pr
 
 	job.Status = "running"
 	job.StartedAt = time.Now()
-	c.jobs.Save(job)
+	_ = c.jobs.Save(job)
 
 	if c.audit != nil {
-		c.audit.LogCommand(client, req.Machine, jobID, req.Command)
+		_ = c.audit.LogCommand(client, req.Machine, jobID, req.Command)
 	}
 
 	return jobID, nil
@@ -202,7 +202,7 @@ func (c *Coordinator) CancelCommand(client, jobID string) error {
 	if agent == nil || !agent.Connected {
 		job.Status = "cancelled"
 		job.FinishedAt = time.Now()
-		c.jobs.Save(job)
+		_ = c.jobs.Save(job)
 		return nil
 	}
 
@@ -221,7 +221,7 @@ func (c *Coordinator) CancelCommand(client, jobID string) error {
 	}
 
 	if c.audit != nil {
-		c.audit.LogCancel(client, job.Machine, jobID)
+		_ = c.audit.LogCancel(client, job.Machine, jobID)
 	}
 
 	return nil

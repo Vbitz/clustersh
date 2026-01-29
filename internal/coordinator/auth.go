@@ -150,9 +150,9 @@ func (am *AuthManager) Approve(fingerprint, name string) error {
 		return fmt.Errorf("save pending: %w", err)
 	}
 
-	// Store the public key for later certificate generation
+	// Store the public key for later certificate generation (best effort)
 	pubKeyPath := filepath.Join(am.configDir, "pending_keys", fingerprint+".pub")
-	storage.SaveJSON(pubKeyPath, pending.PublicKey)
+	_ = storage.SaveJSON(pubKeyPath, pending.PublicKey)
 
 	return nil
 }

@@ -94,7 +94,7 @@ func getClient() (*client.Client, error) {
 
 	configPath := filepath.Join(dir, "config.json")
 	config := storage.DefaultClientConfig()
-	storage.LoadJSON(configPath, config)
+	_ = storage.LoadJSON(configPath, config) // Ignore error, use defaults if file doesn't exist
 
 	return client.New(config, dir)
 }

@@ -146,8 +146,8 @@ func installWindows(binaryPath string) error {
 	// Create scheduled task
 	taskName := "ClusterSH Agent"
 
-	// Delete existing task if any
-	exec.Command("schtasks", "/Delete", "/TN", taskName, "/F").Run()
+	// Delete existing task if any (ignore error if task doesn't exist)
+	_ = exec.Command("schtasks", "/Delete", "/TN", taskName, "/F").Run()
 
 	// Create new task
 	cmd := exec.Command("schtasks", "/Create",
@@ -171,19 +171,15 @@ func installWindows(binaryPath string) error {
 }
 
 func uninstallLinux() error {
-	if err := exec.Command("systemctl", "--user", "stop", "clusteragent").Run(); err != nil {
-		// Ignore error if service not running
-	}
-
-	if err := exec.Command("systemctl", "--user", "disable", "clusteragent").Run(); err != nil {
-		// Ignore error if service not enabled
-	}
+	// Ignore errors if service not running/enabled
+	_ = exec.Command("systemctl", "--user", "stop", "clusteragent").Run()
+	_ = exec.Command("systemctl", "--user", "disable", "clusteragent").Run()
 
 	home, _ := os.UserHomeDir()
 	servicePath := filepath.Join(home, ".config", "systemd", "user", "clusteragent.service")
-	os.Remove(servicePath)
+	_ = os.Remove(servicePath)
 
-	exec.Command("systemctl", "--user", "daemon-reload").Run()
+	_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
 	return nil
 }
 
@@ -191,8 +187,8 @@ func uninstallDarwin() error {
 	home, _ := os.UserHomeDir()
 	plistPath := filepath.Join(home, "Library", "LaunchAgents", "com.clustersh.agent.plist")
 
-	exec.Command("launchctl", "unload", plistPath).Run()
-	os.Remove(plistPath)
+	_ = exec.Command("launchctl", "unload", plistPath).Run()
+	_ = os.Remove(plistPath)
 	return nil
 }
 
