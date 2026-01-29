@@ -1,0 +1,25 @@
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+issues:
+  exclude-rules:
+    # Ignore InsecureSkipVerify for initial client setup (before cert is obtained)
+    - path: internal/client/client.go
+      linters:
+        - gosec
+      text: "G402"
+
+    # Command execution is intentional for this tool
+    - path: internal/agent/agent.go
+      linters:
+        - gosec
+      text: "G204"
