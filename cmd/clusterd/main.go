@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -126,7 +127,12 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("generate server key: %w", err)
 		}
 
-		csr, err := serverKeyPair.GenerateCSR("clusterd")
+		// Get hostname for certificate SANs
+		hostname, _ := os.Hostname()
+		dnsNames := []string{"localhost", hostname}
+		ipAddresses := []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")}
+
+		csr, err := serverKeyPair.GenerateCSRWithSANs("clusterd", dnsNames, ipAddresses)
 		if err != nil {
 			return fmt.Errorf("generate CSR: %w", err)
 		}

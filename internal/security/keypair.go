@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 )
@@ -115,11 +116,18 @@ func (kp *KeyPair) SaveToFiles(keyPath, certPath string) error {
 
 // GenerateCSR creates a certificate signing request.
 func (kp *KeyPair) GenerateCSR(commonName string) ([]byte, error) {
+	return kp.GenerateCSRWithSANs(commonName, nil, nil)
+}
+
+// GenerateCSRWithSANs creates a certificate signing request with DNS names and IP addresses.
+func (kp *KeyPair) GenerateCSRWithSANs(commonName string, dnsNames []string, ipAddresses []net.IP) ([]byte, error) {
 	template := &x509.CertificateRequest{
 		Subject: pkix.Name{
 			Organization: []string{"ClusterSH"},
 			CommonName:   commonName,
 		},
+		DNSNames:    dnsNames,
+		IPAddresses: ipAddresses,
 	}
 
 	csrDER, err := x509.CreateCertificateRequest(rand.Reader, template, kp.PrivateKey)
