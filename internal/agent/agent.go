@@ -3,9 +3,12 @@ package agent
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -55,7 +58,36 @@ func (a *Agent) Connect(ctx context.Context) error {
 		wsURL = "ws" + wsURL[4:]
 	}
 
-	dialer := websocket.DefaultDialer
+	// Load CA certificate
+	caCertPath := filepath.Join(a.configDir, "ca.crt")
+	caCert, err := os.ReadFile(caCertPath)
+	if err != nil {
+		return fmt.Errorf("read CA cert: %w", err)
+	}
+
+	caCertPool := x509.NewCertPool()
+	if !caCertPool.AppendCertsFromPEM(caCert) {
+		return fmt.Errorf("failed to parse CA certificate")
+	}
+
+	// Load agent certificate and key for mTLS
+	certPath := filepath.Join(a.configDir, "agent.crt")
+	keyPath := filepath.Join(a.configDir, "agent.key")
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		return fmt.Errorf("load agent certificate: %w", err)
+	}
+
+	tlsConfig := &tls.Config{
+		RootCAs:      caCertPool,
+		Certificates: []tls.Certificate{cert},
+	}
+
+	dialer := &websocket.Dialer{
+		TLSClientConfig: tlsConfig,
+		Proxy:           http.ProxyFromEnvironment,
+	}
+
 	conn, _, err := dialer.DialContext(ctx, wsURL, nil)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
