@@ -1,0 +1,340 @@
+// Package agent implements the backend agent logic.
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"sync"
+	"time"
+
+	"github.com/gorilla/websocket"
+
+	"j5.nz/clustersh/internal/protocol"
+	"j5.nz/clustersh/internal/storage"
+)
+
+// MaxOutputSize is the maximum output size sent to coordinator (100KB).
+const MaxOutputSize = 100 * 1024
+
+// Agent represents the backend agent.
+type Agent struct {
+	config    *storage.AgentConfig
+	configDir string
+	conn      *websocket.Conn
+	jobs      *storage.JobStore
+	running   map[string]context.CancelFunc
+	mu        sync.Mutex
+}
+
+// New creates a new agent.
+func New(config *storage.AgentConfig, configDir string) (*Agent, error) {
+	jobStore, err := storage.NewJobStore(configDir)
+	if err != nil {
+		return nil, fmt.Errorf("create job store: %w", err)
+	}
+
+	return &Agent{
+		config:    config,
+		configDir: configDir,
+		jobs:      jobStore,
+		running:   make(map[string]context.CancelFunc),
+	}, nil
+}
+
+// Connect establishes a WebSocket connection to the coordinator.
+func (a *Agent) Connect(ctx context.Context) error {
+	wsURL := a.config.CoordinatorURL + "/ws/agent"
+	// Convert http(s) to ws(s)
+	if len(wsURL) > 4 && wsURL[:4] == "http" {
+		wsURL = "ws" + wsURL[4:]
+	}
+
+	dialer := websocket.DefaultDialer
+	conn, _, err := dialer.DialContext(ctx, wsURL, nil)
+	if err != nil {
+		return fmt.Errorf("connect: %w", err)
+	}
+	a.conn = conn
+
+	// Send registration
+	reg := &protocol.RegisterPayload{
+		MachineName: a.config.MachineName,
+		OS:          runtime.GOOS,
+		Arch:        runtime.GOARCH,
+	}
+
+	msg, err := protocol.NewMessage(protocol.MsgRegister, reg)
+	if err != nil {
+		conn.Close()
+		return fmt.Errorf("create registration: %w", err)
+	}
+
+	if err := conn.WriteJSON(msg); err != nil {
+		conn.Close()
+		return fmt.Errorf("send registration: %w", err)
+	}
+
+	log.Printf("Connected to coordinator at %s", a.config.CoordinatorURL)
+	return nil
+}
+
+// Run starts the agent main loop.
+func (a *Agent) Run(ctx context.Context) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		if a.conn == nil {
+			if err := a.Connect(ctx); err != nil {
+				log.Printf("Connection failed: %v, retrying in 10 minutes", err)
+				select {
+				case <-time.After(10 * time.Minute):
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				continue
+			}
+		}
+
+		// Start heartbeat
+		go a.heartbeat(ctx)
+
+		// Read messages
+		if err := a.readMessages(ctx); err != nil {
+			log.Printf("Connection error: %v", err)
+			a.conn.Close()
+			a.conn = nil
+			// Short delay before reconnect
+			select {
+			case <-time.After(5 * time.Second):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+}
+
+func (a *Agent) heartbeat(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if a.conn == nil {
+				return
+			}
+
+			a.mu.Lock()
+			runningJobs := make([]string, 0, len(a.running))
+			for jobID := range a.running {
+				runningJobs = append(runningJobs, jobID)
+			}
+			a.mu.Unlock()
+
+			status := &protocol.StatusPayload{
+				MachineName: a.config.MachineName,
+				RunningJobs: runningJobs,
+			}
+
+			msg, err := protocol.NewMessage(protocol.MsgStatus, status)
+			if err != nil {
+				continue
+			}
+
+			if err := a.conn.WriteJSON(msg); err != nil {
+				log.Printf("Heartbeat failed: %v", err)
+				return
+			}
+		}
+	}
+}
+
+func (a *Agent) readMessages(ctx context.Context) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		var msg protocol.Message
+		if err := a.conn.ReadJSON(&msg); err != nil {
+			return fmt.Errorf("read message: %w", err)
+		}
+
+		switch msg.Type {
+		case protocol.MsgExecute:
+			var payload protocol.ExecutePayload
+			if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+				log.Printf("Failed to decode execute payload: %v", err)
+				continue
+			}
+			go a.executeCommand(ctx, &payload)
+
+		case protocol.MsgCancel:
+			var payload protocol.CancelPayload
+			if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+				log.Printf("Failed to decode cancel payload: %v", err)
+				continue
+			}
+			a.cancelCommand(payload.JobID)
+
+		case protocol.MsgStatus:
+			// Heartbeat response, ignore
+
+		default:
+			log.Printf("Unknown message type: %s", msg.Type)
+		}
+	}
+}
+
+func (a *Agent) executeCommand(ctx context.Context, payload *protocol.ExecutePayload) {
+	jobID := payload.JobID
+	startedAt := time.Now()
+
+	// Create cancellable context
+	timeout := time.Duration(payload.Timeout)
+	if timeout == 0 {
+		timeout = 5 * time.Minute
+	}
+	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
+
+	a.mu.Lock()
+	a.running[jobID] = cancel
+	a.mu.Unlock()
+
+	defer func() {
+		a.mu.Lock()
+		delete(a.running, jobID)
+		a.mu.Unlock()
+		cancel()
+	}()
+
+	// Write files if any
+	for _, file := range payload.Files {
+		dir := filepath.Dir(file.Path)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			a.sendResult(jobID, startedAt, -1, "", fmt.Sprintf("failed to create directory: %v", err))
+			return
+		}
+		mode := os.FileMode(file.Mode)
+		if mode == 0 {
+			mode = 0644
+		}
+		if err := os.WriteFile(file.Path, file.Content, mode); err != nil {
+			a.sendResult(jobID, startedAt, -1, "", fmt.Sprintf("failed to write file: %v", err))
+			return
+		}
+	}
+
+	// Execute command
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.CommandContext(cmdCtx, "powershell", "-NoProfile", "-Command", payload.Command)
+	} else {
+		cmd = exec.CommandContext(cmdCtx, "bash", "-c", payload.Command)
+	}
+
+	output, err := cmd.CombinedOutput()
+	finishedAt := time.Now()
+
+	exitCode := 0
+	errMsg := ""
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			exitCode = -1
+			errMsg = err.Error()
+		}
+	}
+
+	// Truncate output if too large
+	outputStr := string(output)
+	truncated := false
+	if len(outputStr) > MaxOutputSize {
+		outputStr = outputStr[:MaxOutputSize]
+		truncated = true
+	}
+
+	// Save locally
+	job := &storage.Job{
+		JobID:      jobID,
+		Machine:    a.config.MachineName,
+		Command:    payload.Command,
+		Status:     "completed",
+		ExitCode:   exitCode,
+		Output:     string(output), // Full output stored locally
+		Truncated:  truncated,
+		Error:      errMsg,
+		CreatedAt:  startedAt,
+		StartedAt:  startedAt,
+		FinishedAt: finishedAt,
+	}
+	if err := a.jobs.Save(job); err != nil {
+		log.Printf("Failed to save job locally: %v", err)
+	}
+
+	// Send result to coordinator
+	a.sendResult(jobID, startedAt, exitCode, outputStr, errMsg)
+	a.sendResultWithDetails(jobID, startedAt, finishedAt, exitCode, outputStr, truncated, errMsg)
+}
+
+func (a *Agent) sendResult(jobID string, startedAt time.Time, exitCode int, output, errMsg string) {
+	// This is kept for compatibility, actual sending is done by sendResultWithDetails
+}
+
+func (a *Agent) sendResultWithDetails(jobID string, startedAt, finishedAt time.Time, exitCode int, output string, truncated bool, errMsg string) {
+	result := &protocol.ResultPayload{
+		JobID:      jobID,
+		ExitCode:   exitCode,
+		Output:     output,
+		Truncated:  truncated,
+		Error:      errMsg,
+		StartedAt:  startedAt,
+		FinishedAt: finishedAt,
+	}
+
+	msg, err := protocol.NewMessage(protocol.MsgResult, result)
+	if err != nil {
+		log.Printf("Failed to create result message: %v", err)
+		return
+	}
+
+	if a.conn != nil {
+		if err := a.conn.WriteJSON(msg); err != nil {
+			log.Printf("Failed to send result: %v", err)
+		}
+	}
+}
+
+func (a *Agent) cancelCommand(jobID string) {
+	a.mu.Lock()
+	cancel, ok := a.running[jobID]
+	a.mu.Unlock()
+
+	if ok {
+		cancel()
+		log.Printf("Cancelled job: %s", jobID)
+	}
+}
+
+// Close closes the agent connection.
+func (a *Agent) Close() error {
+	if a.conn != nil {
+		return a.conn.Close()
+	}
+	return nil
+}
