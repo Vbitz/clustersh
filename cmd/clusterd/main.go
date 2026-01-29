@@ -2,9 +2,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -230,6 +233,37 @@ func runApprove(cmd *cobra.Command, args []string) error {
 	if len(args) > 1 {
 		name = args[1]
 	}
+
+	// Load config to get port
+	configPath := filepath.Join(dir, "config.json")
+	config := storage.DefaultCoordinatorConfig()
+	_ = storage.LoadJSON(configPath, config)
+
+	// Try to approve via API first (if daemon is running)
+	apiURL := fmt.Sprintf("http://127.0.0.1:%d/approve/%s", config.Port, fingerprint)
+	reqBody, _ := json.Marshal(map[string]string{"name": name})
+
+	resp, err := http.Post(apiURL, "application/json", bytes.NewReader(reqBody))
+	if err == nil {
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			fmt.Printf("Approved client %s as %s\n", fingerprint, name)
+			return nil
+		}
+		// Read error message
+		body, _ := io.ReadAll(resp.Body)
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(body, &errResp) == nil && errResp.Error != "" {
+			return fmt.Errorf("%s", errResp.Error)
+		}
+		return fmt.Errorf("API error: %s", resp.Status)
+	}
+
+	// Fall back to direct file modification if daemon is not running
+	fmt.Println("Note: Coordinator daemon not running, modifying files directly.")
+	fmt.Println("      Restart the daemon for changes to take effect.")
 
 	// Load CA for auth manager
 	caKeyPath := filepath.Join(dir, "ca.key")
