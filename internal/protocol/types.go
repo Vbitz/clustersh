@@ -11,12 +11,14 @@ type MessageType string
 
 const (
 	// Coordinator to Agent messages
-	MsgExecute MessageType = "execute"
-	MsgCancel  MessageType = "cancel"
+	MsgExecute   MessageType = "execute"
+	MsgCancel    MessageType = "cancel"
+	MsgGetOutput MessageType = "get_output"
 
 	// Agent to Coordinator messages
-	MsgResult   MessageType = "result"
-	MsgRegister MessageType = "register"
+	MsgResult     MessageType = "result"
+	MsgRegister   MessageType = "register"
+	MsgOutputData MessageType = "output_data"
 
 	// Bidirectional messages
 	MsgStatus MessageType = "status"
@@ -79,6 +81,25 @@ type StatusPayload struct {
 type ErrorPayload struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+}
+
+// GetOutputPayload is sent from coordinator to agent to request job output.
+type GetOutputPayload struct {
+	JobID     string `json:"job_id"`
+	RequestID string `json:"request_id"`
+	Offset    int64  `json:"offset"`
+	Limit     int64  `json:"limit"`
+}
+
+// OutputDataPayload is sent from agent to coordinator with job output data.
+type OutputDataPayload struct {
+	JobID     string `json:"job_id"`
+	RequestID string `json:"request_id"`
+	Output    string `json:"output"`
+	Offset    int64  `json:"offset"`
+	TotalSize int64  `json:"total_size"`
+	HasMore   bool   `json:"has_more"`
+	Error     string `json:"error,omitempty"`
 }
 
 // Duration wraps time.Duration for JSON marshaling.

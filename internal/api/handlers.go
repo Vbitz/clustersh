@@ -3,6 +3,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 
@@ -109,7 +110,33 @@ func (s *Server) handleOutput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	output, err := s.coord.GetOutput(uuid)
+	// Check for live output request
+	live := r.URL.Query().Get("live") == "true"
+
+	var output *protocol.JobOutput
+	var err error
+
+	if live {
+		// Parse offset and limit
+		var offset, limit int64
+		if v := r.URL.Query().Get("offset"); v != "" {
+			if _, parseErr := fmt.Sscanf(v, "%d", &offset); parseErr != nil {
+				writeError(w, http.StatusBadRequest, "invalid offset")
+				return
+			}
+		}
+		if v := r.URL.Query().Get("limit"); v != "" {
+			if _, parseErr := fmt.Sscanf(v, "%d", &limit); parseErr != nil {
+				writeError(w, http.StatusBadRequest, "invalid limit")
+				return
+			}
+		}
+
+		output, err = s.coord.GetFullOutput(uuid, offset, limit)
+	} else {
+		output, err = s.coord.GetOutput(uuid)
+	}
+
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return

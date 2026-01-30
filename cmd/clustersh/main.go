@@ -16,10 +16,13 @@ import (
 )
 
 var (
-	configDir      string
-	timeout        time.Duration
-	files          []string
+	configDir       string
+	timeout         time.Duration
+	files           []string
 	waitForApproval bool
+	liveOutput      bool
+	outputOffset    int64
+	outputLimit     int64
 )
 
 func main() {
@@ -52,6 +55,9 @@ func main() {
 		Args:  cobra.ExactArgs(1),
 		RunE:  runCat,
 	}
+	catCmd.Flags().BoolVar(&liveOutput, "live", false, "Fetch output directly from agent (for running jobs or full output)")
+	catCmd.Flags().Int64Var(&outputOffset, "offset", 0, "Byte offset to start reading from")
+	catCmd.Flags().Int64Var(&outputLimit, "limit", 0, "Maximum bytes to read (0 = default 10MB)")
 
 	historyCmd := &cobra.Command{
 		Use:   "history <machine>",
@@ -190,7 +196,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 				}
 			}
 			if output.Truncated {
-				fmt.Printf("\n[Output truncated. Use 'clustersh cat %s' to retrieve full output from agent]\n", jobID)
+				fmt.Printf("\n[Output truncated. Use 'clustersh cat --live %s' to fetch full output from agent]\n", jobID)
 			}
 			if output.Error != "" {
 				fmt.Printf("Error: %s\n", output.Error)
@@ -213,12 +219,21 @@ func runCat(cmd *cobra.Command, args []string) error {
 	}
 
 	jobID := args[0]
-	output, err := c.Output(jobID)
+
+	var output *protocol.JobOutput
+	if liveOutput {
+		output, err = c.LiveOutput(jobID, outputOffset, outputLimit)
+	} else {
+		output, err = c.Output(jobID)
+	}
 	if err != nil {
 		return fmt.Errorf("get output: %w", err)
 	}
 
 	fmt.Print(output.Output)
+	if output.Truncated && !liveOutput {
+		fmt.Printf("\n[Output truncated. Use 'clustersh cat --live %s' to fetch full output from agent]\n", jobID)
+	}
 	return nil
 }
 

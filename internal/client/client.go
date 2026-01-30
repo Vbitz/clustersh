@@ -123,6 +123,29 @@ func (c *Client) Output(jobID string) (*protocol.JobOutput, error) {
 	return &output, nil
 }
 
+// LiveOutput retrieves job output directly from the agent.
+func (c *Client) LiveOutput(jobID string, offset, limit int64) (*protocol.JobOutput, error) {
+	path := fmt.Sprintf("/output/%s?live=true", jobID)
+	if offset > 0 {
+		path += fmt.Sprintf("&offset=%d", offset)
+	}
+	if limit > 0 {
+		path += fmt.Sprintf("&limit=%d", limit)
+	}
+
+	resp, err := c.get(path)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var output protocol.JobOutput
+	if err := json.NewDecoder(resp.Body).Decode(&output); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return &output, nil
+}
+
 // History retrieves command history for a machine.
 func (c *Client) History(machine string) ([]protocol.HistoryEntry, error) {
 	resp, err := c.get("/history/" + machine)

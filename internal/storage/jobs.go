@@ -63,6 +63,11 @@ func (s *JobStore) Delete(jobID string) error {
 	return os.Remove(path)
 }
 
+// OutputPath returns the path to a job's output file.
+func (s *JobStore) OutputPath(jobID string) string {
+	return filepath.Join(s.dir, jobID+".output")
+}
+
 // List returns all jobs, optionally filtered by machine.
 func (s *JobStore) List(machine string) ([]*Job, error) {
 	entries, err := os.ReadDir(s.dir)

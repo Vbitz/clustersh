@@ -33,19 +33,22 @@ type Agent struct {
 
 // Coordinator manages agents and job dispatch.
 type Coordinator struct {
-	agents   map[string]*Agent
-	jobs     *storage.JobStore
-	audit    *storage.AuditLog
-	mu       sync.RWMutex
-	onResult func(jobID string, result *protocol.ResultPayload)
+	agents         map[string]*Agent
+	jobs           *storage.JobStore
+	audit          *storage.AuditLog
+	mu             sync.RWMutex
+	onResult       func(jobID string, result *protocol.ResultPayload)
+	outputRequests map[string]chan *protocol.OutputDataPayload
+	outputMu       sync.Mutex
 }
 
 // New creates a new coordinator.
 func New(jobStore *storage.JobStore, auditLog *storage.AuditLog) *Coordinator {
 	return &Coordinator{
-		agents: make(map[string]*Agent),
-		jobs:   jobStore,
-		audit:  auditLog,
+		agents:         make(map[string]*Agent),
+		jobs:           jobStore,
+		audit:          auditLog,
+		outputRequests: make(map[string]chan *protocol.OutputDataPayload),
 	}
 }
 
@@ -322,7 +325,145 @@ func (c *Coordinator) HandleAgentMessage(agentName string, msg *protocol.Message
 		c.UpdateAgentStatus(agentName)
 		return nil
 
+	case protocol.MsgOutputData:
+		var outputData protocol.OutputDataPayload
+		if err := json.Unmarshal(msg.Payload, &outputData); err != nil {
+			return fmt.Errorf("decode output_data: %w", err)
+		}
+		c.handleOutputData(&outputData)
+		return nil
+
 	default:
 		return fmt.Errorf("unknown message type: %s", msg.Type)
 	}
+}
+
+func (c *Coordinator) handleOutputData(data *protocol.OutputDataPayload) {
+	c.outputMu.Lock()
+	ch, ok := c.outputRequests[data.RequestID]
+	c.outputMu.Unlock()
+
+	if ok {
+		select {
+		case ch <- data:
+		default:
+		}
+	}
+}
+
+// RequestLiveOutput sends a get_output request to an agent and waits for the response.
+func (c *Coordinator) RequestLiveOutput(jobID string, offset, limit int64) (*protocol.OutputDataPayload, error) {
+	job, err := c.jobs.Load(jobID)
+	if err != nil {
+		return nil, fmt.Errorf("job not found: %s", jobID)
+	}
+
+	agent := c.GetAgent(job.Machine)
+	if agent == nil {
+		return nil, fmt.Errorf("agent not found: %s", job.Machine)
+	}
+
+	agent.mu.Lock()
+	if !agent.Connected {
+		agent.mu.Unlock()
+		return nil, fmt.Errorf("agent not connected: %s", job.Machine)
+	}
+	agent.mu.Unlock()
+
+	// Create request with unique ID
+	requestID := uuid.New().String()
+	respCh := make(chan *protocol.OutputDataPayload, 1)
+
+	c.outputMu.Lock()
+	c.outputRequests[requestID] = respCh
+	c.outputMu.Unlock()
+
+	defer func() {
+		c.outputMu.Lock()
+		delete(c.outputRequests, requestID)
+		c.outputMu.Unlock()
+	}()
+
+	// Send request
+	payload := &protocol.GetOutputPayload{
+		JobID:     jobID,
+		RequestID: requestID,
+		Offset:    offset,
+		Limit:     limit,
+	}
+
+	msg, err := protocol.NewMessage(protocol.MsgGetOutput, payload)
+	if err != nil {
+		return nil, fmt.Errorf("create message: %w", err)
+	}
+
+	agent.mu.Lock()
+	err = agent.Conn.WriteJSON(msg)
+	agent.mu.Unlock()
+
+	if err != nil {
+		return nil, fmt.Errorf("send request: %w", err)
+	}
+
+	// Wait for response with timeout
+	select {
+	case resp := <-respCh:
+		if resp.Error != "" {
+			return nil, fmt.Errorf("agent error: %s", resp.Error)
+		}
+		return resp, nil
+	case <-time.After(30 * time.Second):
+		return nil, fmt.Errorf("timeout waiting for agent response")
+	}
+}
+
+// GetFullOutput returns job output, fetching from agent if needed.
+func (c *Coordinator) GetFullOutput(jobID string, offset, limit int64) (*protocol.JobOutput, error) {
+	job, err := c.jobs.Load(jobID)
+	if err != nil {
+		return nil, fmt.Errorf("job not found: %s", jobID)
+	}
+
+	// Try to fetch live output from agent
+	agent := c.GetAgent(job.Machine)
+	if agent != nil {
+		agent.mu.Lock()
+		connected := agent.Connected
+		agent.mu.Unlock()
+
+		if connected {
+			liveOutput, err := c.RequestLiveOutput(jobID, offset, limit)
+			if err == nil {
+				return &protocol.JobOutput{
+					JobID:      job.JobID,
+					Machine:    job.Machine,
+					Command:    job.Command,
+					ExitCode:   job.ExitCode,
+					Output:     liveOutput.Output,
+					Truncated:  liveOutput.HasMore,
+					Error:      job.Error,
+					Status:     job.Status,
+					StartedAt:  job.StartedAt,
+					FinishedAt: job.FinishedAt,
+					CreatedAt:  job.CreatedAt,
+				}, nil
+			}
+			log.Printf("Failed to get live output for %s: %v, falling back to stored", jobID, err)
+		}
+	}
+
+	// Fall back to stored output
+	return &protocol.JobOutput{
+		JobID:      job.JobID,
+		Machine:    job.Machine,
+		Command:    job.Command,
+		ExitCode:   job.ExitCode,
+		Output:     job.Output,
+		Truncated:  job.Truncated,
+		Error:      job.Error,
+		Status:     job.Status,
+		StartedAt:  job.StartedAt,
+		FinishedAt: job.FinishedAt,
+		CreatedAt:  job.CreatedAt,
+	}, nil
 }

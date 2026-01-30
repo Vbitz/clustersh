@@ -25,6 +25,9 @@ import (
 // MaxOutputSize is the maximum output size sent to coordinator (100KB).
 const MaxOutputSize = 100 * 1024
 
+// DefaultOutputLimit is the default limit for live output requests (10MB).
+const DefaultOutputLimit = 10 * 1024 * 1024
+
 // Agent represents the backend agent.
 type Agent struct {
 	config    *storage.AgentConfig
@@ -226,6 +229,14 @@ func (a *Agent) readMessages(ctx context.Context) error {
 		case protocol.MsgStatus:
 			// Heartbeat response, ignore
 
+		case protocol.MsgGetOutput:
+			var payload protocol.GetOutputPayload
+			if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+				log.Printf("Failed to decode get_output payload: %v", err)
+				continue
+			}
+			go a.handleGetOutput(&payload)
+
 		default:
 			log.Printf("Unknown message type: %s", msg.Type)
 		}
@@ -271,7 +282,28 @@ func (a *Agent) executeCommand(ctx context.Context, payload *protocol.ExecutePay
 		}
 	}
 
-	// Execute command
+	// Create output file for streaming output
+	outputPath := a.jobs.OutputPath(jobID)
+	outputFile, err := os.Create(outputPath)
+	if err != nil {
+		a.sendResult(jobID, startedAt, -1, "", fmt.Sprintf("failed to create output file: %v", err))
+		return
+	}
+
+	// Save job as running so output file can be found
+	runningJob := &storage.Job{
+		JobID:     jobID,
+		Machine:   a.config.MachineName,
+		Command:   payload.Command,
+		Status:    "running",
+		CreatedAt: startedAt,
+		StartedAt: startedAt,
+	}
+	if err := a.jobs.Save(runningJob); err != nil {
+		log.Printf("Failed to save running job: %v", err)
+	}
+
+	// Execute command with output piped to file
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
 		cmd = exec.CommandContext(cmdCtx, "powershell", "-NoProfile", "-Command", payload.Command)
@@ -279,7 +311,11 @@ func (a *Agent) executeCommand(ctx context.Context, payload *protocol.ExecutePay
 		cmd = exec.CommandContext(cmdCtx, "bash", "-c", payload.Command)
 	}
 
-	output, err := cmd.CombinedOutput()
+	cmd.Stdout = outputFile
+	cmd.Stderr = outputFile
+
+	err = cmd.Run()
+	outputFile.Close()
 	finishedAt := time.Now()
 
 	exitCode := 0
@@ -293,7 +329,14 @@ func (a *Agent) executeCommand(ctx context.Context, payload *protocol.ExecutePay
 		}
 	}
 
-	// Truncate output if too large
+	// Read output from file
+	output, readErr := os.ReadFile(outputPath)
+	if readErr != nil {
+		log.Printf("Failed to read output file: %v", readErr)
+		output = []byte{}
+	}
+
+	// Truncate output if too large for sending
 	outputStr := string(output)
 	truncated := false
 	if len(outputStr) > MaxOutputSize {
@@ -360,6 +403,91 @@ func (a *Agent) cancelCommand(jobID string) {
 	if ok {
 		cancel()
 		log.Printf("Cancelled job: %s", jobID)
+	}
+}
+
+func (a *Agent) handleGetOutput(payload *protocol.GetOutputPayload) {
+	outputPath := a.jobs.OutputPath(payload.JobID)
+
+	// Check if output file exists
+	info, err := os.Stat(outputPath)
+	if err != nil {
+		a.sendOutputData(&protocol.OutputDataPayload{
+			JobID:     payload.JobID,
+			RequestID: payload.RequestID,
+			Error:     fmt.Sprintf("output file not found: %v", err),
+		})
+		return
+	}
+
+	totalSize := info.Size()
+
+	// Open file and seek to offset
+	file, err := os.Open(outputPath)
+	if err != nil {
+		a.sendOutputData(&protocol.OutputDataPayload{
+			JobID:     payload.JobID,
+			RequestID: payload.RequestID,
+			Error:     fmt.Sprintf("failed to open output file: %v", err),
+		})
+		return
+	}
+	defer file.Close()
+
+	// Determine limit
+	limit := payload.Limit
+	if limit <= 0 {
+		limit = DefaultOutputLimit
+	}
+
+	// Seek to offset
+	offset := payload.Offset
+	if offset > 0 {
+		if _, err := file.Seek(offset, 0); err != nil {
+			a.sendOutputData(&protocol.OutputDataPayload{
+				JobID:     payload.JobID,
+				RequestID: payload.RequestID,
+				Error:     fmt.Sprintf("failed to seek: %v", err),
+			})
+			return
+		}
+	}
+
+	// Read data
+	buf := make([]byte, limit)
+	n, err := file.Read(buf)
+	if err != nil && err.Error() != "EOF" {
+		a.sendOutputData(&protocol.OutputDataPayload{
+			JobID:     payload.JobID,
+			RequestID: payload.RequestID,
+			Error:     fmt.Sprintf("failed to read output: %v", err),
+		})
+		return
+	}
+
+	hasMore := offset+int64(n) < totalSize
+
+	a.sendOutputData(&protocol.OutputDataPayload{
+		JobID:     payload.JobID,
+		RequestID: payload.RequestID,
+		Output:    string(buf[:n]),
+		Offset:    offset,
+		TotalSize: totalSize,
+		HasMore:   hasMore,
+	})
+}
+
+func (a *Agent) sendOutputData(payload *protocol.OutputDataPayload) {
+	msg, err := protocol.NewMessage(protocol.MsgOutputData, payload)
+	if err != nil {
+		log.Printf("Failed to create output_data message: %v", err)
+		return
+	}
+
+	if a.conn != nil {
+		if err := a.conn.WriteJSON(msg); err != nil {
+			log.Printf("Failed to send output_data: %v", err)
+		}
 	}
 }
 
